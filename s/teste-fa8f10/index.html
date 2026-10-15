@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0f1219">
+<title>teste — MOOV América</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="../../icon-192.png">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#10131a;color:#e4e2df;height:100vh;height:100dvh;overflow:hidden;touch-action:none}
+#c{width:100%;height:100%;display:block;touch-action:none}
+.hud{position:absolute;top:0;left:0;right:0;padding:16px 20px;background:linear-gradient(180deg,rgba(16,19,26,.95),rgba(16,19,26,.6) 60%,transparent);pointer-events:none}
+.hud h1{font-size:18px;font-weight:700}
+.hud p{font-size:12px;color:rgba(255,255,255,.45);margin-top:3px}
+.badge{position:absolute;top:16px;right:16px;font-size:9px;color:#fff;padding:4px 10px;border-radius:6px;font-weight:700;letter-spacing:.8px;background:#6b7084}
+.badge.ok{background:#16a34a}
+.bar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+.b{width:42px;height:42px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:rgba(16,19,26,.85);color:rgba(255,255,255,.7);font-size:16px}
+.b.on{color:#4f8cff;border-color:#4f8cff}
+.camadas{position:absolute;bottom:70px;left:50%;transform:translateX(-50%);display:none;flex-wrap:wrap;justify-content:center;gap:6px;width:min(92vw,520px)}
+.camadas.show{display:flex}
+.chip{font-size:11px;padding:6px 10px;border-radius:14px;border:1px solid rgba(255,255,255,.15);background:rgba(16,19,26,.9);color:#e4e2df}
+.chip.off{opacity:.35;text-decoration:line-through}
+.load{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:13px;color:rgba(255,255,255,.5)}
+.sp{width:40px;height:40px;border:3px solid rgba(255,255,255,.1);border-top-color:#4f8cff;border-radius:50%;animation:s .8s linear infinite;margin:0 auto 12px}
+@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="hud"><h1>teste</h1><p>9 PAV - 7 STUDIO · MOOV América</p></div>
+<span class="badge" id="badge">ONLINE</span>
+<canvas id="c"></canvas>
+<div class="load" id="load"><div class="sp"></div>Carregando modelo 3D...</div>
+<div class="camadas" id="camadas"></div>
+<div class="bar">
+  <button class="b" onclick="resetCam()" title="Recentralizar">&#8634;</button>
+  <button class="b" onclick="viewTop()" title="Vista de cima">&#8593;</button>
+  <button class="b" id="bCam" onclick="toggleCamadas()" title="Camadas">&#9776;</button>
+</div>
+<script src="../../js/three.min.js"></script>
+<script src="../../js/OrbitControls.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('../../sw.js', {scope: '../../'}).then(() => navigator.serviceWorker.ready)
+    .then(() => { const b = document.getElementById('badge'); b.textContent = 'DISPONÍVEL OFFLINE'; b.classList.add('ok'); })
+    .catch(() => {});
+}
+
+const canvas = document.getElementById('c');
+const R = new THREE.WebGLRenderer({canvas, antialias: true});
+R.setPixelRatio(Math.min(devicePixelRatio, 2));
+R.setSize(innerWidth, innerHeight);
+R.toneMapping = THREE.ACESFilmicToneMapping;
+R.toneMappingExposure = 1.2;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f1219);
+const cam = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 500);
+const ctl = new THREE.OrbitControls(cam, canvas);
+ctl.enableDamping = true;
+scene.add(new THREE.AmbientLight(0xd0d8f0, 0.45));
+const sun = new THREE.DirectionalLight(0xfff0dd, 0.85); sun.position.set(25, 50, 20); scene.add(sun);
+const fill = new THREE.DirectionalLight(0x8099cc, 0.3); fill.position.set(-15, 10, -10); scene.add(fill);
+scene.add(new THREE.HemisphereLight(0x4466aa, 0x332211, 0.3));
+const grid = new THREE.GridHelper(50, 50, 0x222840, 0x181c2a); scene.add(grid);
+
+let mesh, initPos, D, idxAll, tipos;
+const ocultos = new Set();
+
+Promise.all([fetch('dados.json').then(r => r.json()), fetch('modelo.bin').then(r => r.arrayBuffer())]).then(([d, bin]) => {
+  D = d;
+  const pos = new Float32Array(bin, d.offsets.vertices, d.nv * 3);
+  idxAll = new Uint32Array(bin, d.offsets.indices, d.nt * 3);
+  const c8 = new Uint8Array(bin, d.offsets.cores, d.nv * 3);
+  tipos = new Uint8Array(bin, d.offsets.tipos, d.nt);
+  const col = new Float32Array(d.nv * 3);
+  for (let i = 0; i < col.length; i++) col[i] = c8[i] / 255;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setIndex(new THREE.BufferAttribute(idxAll, 1));
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({vertexColors: true, roughness: .65, metalness: .08, side: THREE.DoubleSide}));
+  mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), new THREE.LineBasicMaterial({color: 0, transparent: true, opacity: .08})));
+  scene.add(mesh);
+  const s = geo.boundingBox.getSize(new THREE.Vector3()), m = Math.max(s.x, s.y, s.z) * 1.4 / Math.min(1, cam.aspect);
+  cam.position.set(m * .7, m * .6, m * .7); ctl.update(); initPos = cam.position.clone();
+  grid.position.y = geo.boundingBox.min.y - .05;
+  document.getElementById('load').remove();
+  montarCamadas();
+});
+
+function montarCamadas() {
+  const box = document.getElementById('camadas'), cont = new Map();
+  for (const t of tipos) cont.set(t, (cont.get(t) || 0) + 1);
+  [...cont.keys()].sort((a, b) => a - b).forEach(t => {
+    const ch = document.createElement('button');
+    ch.className = 'chip'; ch.textContent = (D.tipos_nomes[t] || 'OUTRO').toLowerCase();
+    ch.onclick = () => { ocultos.has(t) ? ocultos.delete(t) : ocultos.add(t); ch.classList.toggle('off'); aplicar(); };
+    box.appendChild(ch);
+  });
+}
+function aplicar() {
+  const out = new Uint32Array(idxAll.length); let k = 0;
+  for (let t = 0; t < tipos.length; t++) if (!ocultos.has(tipos[t])) { out[k++] = idxAll[t*3]; out[k++] = idxAll[t*3+1]; out[k++] = idxAll[t*3+2]; }
+  mesh.geometry.setIndex(new THREE.BufferAttribute(out.subarray(0, k), 1));
+}
+function toggleCamadas() { document.getElementById('camadas').classList.toggle('show'); document.getElementById('bCam').classList.toggle('on'); }
+function resetCam() { if (initPos) { cam.position.copy(initPos); ctl.target.set(0, 0, 0); } }
+function viewTop() { if (!mesh) return; const s = mesh.geometry.boundingBox.getSize(new THREE.Vector3()); cam.position.set(0, Math.max(s.x, s.z) * 1.3, .01); ctl.target.set(0, 0, 0); }
+addEventListener('resize', () => { R.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
+(function loop() { ctl.update(); R.render(scene, cam); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>
