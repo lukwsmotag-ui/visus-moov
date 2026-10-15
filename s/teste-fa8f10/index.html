@@ -23,6 +23,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#10131a;color:#e4e2d
 .camadas.show{display:flex}
 .chip{font-size:11px;padding:6px 10px;border-radius:14px;border:1px solid rgba(255,255,255,.15);background:rgba(16,19,26,.9);color:#e4e2df}
 .chip.off{opacity:.35;text-decoration:line-through}
+.ficha{position:absolute;left:12px;right:12px;top:78px;background:rgba(16,19,26,.94);border:1px solid rgba(255,255,255,.1);border-left:3px solid #facc15;border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.5;display:none}
+.ficha b{display:block;font-size:14px}
+.ficha span{color:#facc15;font-size:11px;font-weight:600}
+.ficha div{color:rgba(255,255,255,.55)}
 .load{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;font-size:13px;color:rgba(255,255,255,.5)}
 .sp{width:40px;height:40px;border:3px solid rgba(255,255,255,.1);border-top-color:#4f8cff;border-radius:50%;animation:s .8s linear infinite;margin:0 auto 12px}
 @keyframes s{to{transform:rotate(360deg)}}
@@ -34,6 +38,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#10131a;color:#e4e2d
 <canvas id="c"></canvas>
 <div class="load" id="load"><div class="sp"></div>Carregando modelo 3D...</div>
 <div class="camadas" id="camadas"></div>
+<div class="ficha" id="ficha"></div>
 <div class="bar">
   <button class="b" onclick="resetCam()" title="Recentralizar">&#8634;</button>
   <button class="b" onclick="viewTop()" title="Vista de cima">&#8593;</button>
@@ -65,7 +70,7 @@ const fill = new THREE.DirectionalLight(0x8099cc, 0.3); fill.position.set(-15, 1
 scene.add(new THREE.HemisphereLight(0x4466aa, 0x332211, 0.3));
 const grid = new THREE.GridHelper(50, 50, 0x222840, 0x181c2a); scene.add(grid);
 
-let mesh, initPos, D, idxAll, tipos;
+let mesh, initPos, D, idxAll, tipos, pecas, triMap = null, destaque = null;
 const ocultos = new Set();
 
 Promise.all([fetch('dados.json').then(r => r.json()), fetch('modelo.bin').then(r => r.arrayBuffer())]).then(([d, bin]) => {
@@ -74,6 +79,10 @@ Promise.all([fetch('dados.json').then(r => r.json()), fetch('modelo.bin').then(r
   idxAll = new Uint32Array(bin, d.offsets.indices, d.nt * 3);
   const c8 = new Uint8Array(bin, d.offsets.cores, d.nv * 3);
   tipos = new Uint8Array(bin, d.offsets.tipos, d.nt);
+  if (d.offsets.pecas !== undefined) {
+    const raw = bin.slice(d.offsets.pecas, d.offsets.pecas + d.nt * d.peca_bytes);
+    pecas = d.peca_bytes === 2 ? new Uint16Array(raw) : new Uint32Array(raw);
+  }
   const col = new Float32Array(d.nv * 3);
   for (let i = 0; i < col.length; i++) col[i] = c8[i] / 255;
   const geo = new THREE.BufferGeometry();
@@ -85,12 +94,18 @@ Promise.all([fetch('dados.json').then(r => r.json()), fetch('modelo.bin').then(r
   mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({vertexColors: true, roughness: .65, metalness: .08, side: THREE.DoubleSide}));
   mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), new THREE.LineBasicMaterial({color: 0, transparent: true, opacity: .08})));
   scene.add(mesh);
-  const s = geo.boundingBox.getSize(new THREE.Vector3()), m = Math.max(s.x, s.y, s.z) * 1.4 / Math.min(1, cam.aspect);
-  cam.position.set(m * .7, m * .6, m * .7); ctl.update(); initPos = cam.position.clone();
+  enquadrar();
   grid.position.y = geo.boundingBox.min.y - .05;
   document.getElementById('load').remove();
   montarCamadas();
 });
+
+function enquadrar() {
+  if (!mesh || !innerWidth || !innerHeight) { initPos = null; return; }
+  cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix();
+  const s = mesh.geometry.boundingBox.getSize(new THREE.Vector3()), m = Math.max(s.x, s.y, s.z) * 1.4 / Math.min(1, cam.aspect);
+  cam.position.set(m * .7, m * .6, m * .7); ctl.target.set(0, 0, 0); ctl.update(); initPos = cam.position.clone();
+}
 
 function montarCamadas() {
   const box = document.getElementById('camadas'), cont = new Map();
@@ -103,14 +118,46 @@ function montarCamadas() {
   });
 }
 function aplicar() {
-  const out = new Uint32Array(idxAll.length); let k = 0;
-  for (let t = 0; t < tipos.length; t++) if (!ocultos.has(tipos[t])) { out[k++] = idxAll[t*3]; out[k++] = idxAll[t*3+1]; out[k++] = idxAll[t*3+2]; }
+  const out = new Uint32Array(idxAll.length), mapa = new Uint32Array(tipos.length); let k = 0, m = 0;
+  for (let t = 0; t < tipos.length; t++) if (!ocultos.has(tipos[t])) { mapa[m++] = t; out[k++] = idxAll[t*3]; out[k++] = idxAll[t*3+1]; out[k++] = idxAll[t*3+2]; }
+  triMap = mapa.subarray(0, m);
   mesh.geometry.setIndex(new THREE.BufferAttribute(out.subarray(0, k), 1));
 }
+
+// Toque numa peça → ficha (nome, tipo, material) e destaque em amarelo
+const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
+let toque = null;
+canvas.addEventListener('pointerdown', e => { toque = [e.clientX, e.clientY]; });
+canvas.addEventListener('pointerup', e => {
+  if (!mesh || !pecas || !toque || Math.hypot(e.clientX - toque[0], e.clientY - toque[1]) > 6) return;
+  const ficha = document.getElementById('ficha');
+  if (destaque) { scene.remove(destaque); destaque = null; }
+  ptr.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ptr, cam);
+  const hit = ray.intersectObject(mesh, false)[0];
+  if (!hit) { ficha.style.display = 'none'; return; }
+  const tri = triMap ? triMap[hit.faceIndex] : hit.faceIndex, pid = pecas[tri];
+  const [bruto, mat, disc] = D.pecas[pid] || ['', '', ''];
+  const p = bruto.split(':'), nome = (p.length >= 3 ? p[1] : bruto || 'Peça').trim();
+  const tipo = (D.tipos_nomes[tipos[tri]] || '').toLowerCase();
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  ficha.innerHTML = `<b>${esc(nome)}</b><span>${esc(tipo)}${disc ? ' · ' + esc(disc) : ''}</span>` + (mat ? `<div>Material: ${esc(mat)}</div>` : '');
+  ficha.style.display = 'block';
+  const sel = [];
+  for (let t = 0; t < pecas.length; t++) if (pecas[t] === pid) sel.push(idxAll[t*3], idxAll[t*3+1], idxAll[t*3+2]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', mesh.geometry.getAttribute('position')); g.setIndex(sel);
+  destaque = new THREE.Mesh(g, new THREE.MeshBasicMaterial({color: 0xfacc15, transparent: true, opacity: .55, depthTest: false, side: THREE.DoubleSide}));
+  destaque.renderOrder = 10; scene.add(destaque);
+});
 function toggleCamadas() { document.getElementById('camadas').classList.toggle('show'); document.getElementById('bCam').classList.toggle('on'); }
-function resetCam() { if (initPos) { cam.position.copy(initPos); ctl.target.set(0, 0, 0); } }
+function resetCam() { enquadrar(); }
 function viewTop() { if (!mesh) return; const s = mesh.geometry.boundingBox.getSize(new THREE.Vector3()); cam.position.set(0, Math.max(s.x, s.z) * 1.3, .01); ctl.target.set(0, 0, 0); }
-addEventListener('resize', () => { R.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
+addEventListener('resize', () => {
+  if (!innerWidth || !innerHeight) return;
+  R.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix();
+  if (!initPos) enquadrar();
+});
 (function loop() { ctl.update(); R.render(scene, cam); requestAnimationFrame(loop); })();
 </script>
 </body>
